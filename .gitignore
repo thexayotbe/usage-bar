@@ -5,3 +5,5 @@ build/
 xcuserdata/
 state/
 *.log
+design/*.html
+app/.build/
