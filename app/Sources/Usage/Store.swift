@@ -52,6 +52,8 @@ final class UsageStore: ObservableObject {
     /// MAIN's 5h window drives the number and the arc in the menu bar.
     var mainFive: Double? { claude.first(where: { $0.id == "main" })?.five?.used ?? claude.first?.five?.used }
 
+    var mainWeek: Double? { claude.first(where: { $0.id == "main" })?.week?.used ?? claude.first?.week?.used }
+
     /// Worst of all Claude limits drives the ring colour.
     var worstClaude: Double { claude.flatMap { [$0.five?.used, $0.week?.used] }.compactMap { $0 }.max() ?? 0 }
 

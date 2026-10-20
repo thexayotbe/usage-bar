@@ -54,16 +54,18 @@ enum Severity {
 
     var color: Color { Color(nsColor: ns) }
 
-    /// Modern two-stop fill for bars (start → end).
-    var gradient: LinearGradient {
-        let stops: [UInt32]
+    /// Modern two-stop fill for bars and rings (start → end).
+    var stops: (UInt32, UInt32) {
         switch self {
-        case .calm: stops = [0x22D3EE, 0x34D399]     // cyan → emerald
-        case .amber: stops = [0xFDE047, 0xF59E0B]
-        case .orange: stops = [0xFDBA74, 0xF97316]
-        case .red: stops = [0xFCA5A5, 0xEF4444]
+        case .calm: return (0x22D3EE, 0x34D399)     // cyan → emerald
+        case .amber: return (0xFDE047, 0xF59E0B)
+        case .orange: return (0xFDBA74, 0xF97316)
+        case .red: return (0xFCA5A5, 0xEF4444)
         }
-        return LinearGradient(colors: stops.map { Color(nsColor: Theme.hex($0)) }, startPoint: .leading, endPoint: .trailing)
+    }
+
+    var gradient: LinearGradient {
+        LinearGradient(colors: [Color(nsColor: Theme.hex(stops.0)), Color(nsColor: Theme.hex(stops.1))], startPoint: .leading, endPoint: .trailing)
     }
 
     var ns: NSColor {

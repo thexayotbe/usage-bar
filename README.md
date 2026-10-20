@@ -3,7 +3,7 @@
 A small macOS menu bar app that shows the **5-hour and weekly limits of all your AI accounts** in one place —
 Claude (MAIN + SECOND) and agy / Gemini (agy, agy2, agy3, agy4) — so you never have to run `/usage` in each tool.
 
-- **Menu bar:** a ring + one number (MAIN's 5-hour %). Ring colour = the worst Claude limit
+- **Menu bar:** two concentric gradient rings + one number — outer ring = MAIN 5-hour, inner ring = MAIN weekly, number = MAIN 5-hour %. Each ring is coloured by its own level
   (neutral < 70 · amber 70–85 · orange 85–95 · red ≥ 95). A small orange dot means an agy account needs login or the data is stale.
 - **Popover:** Claude cards (MAIN, SECOND), agy rows with mini usage bars (click a row or **Details** to open a full details window), an alert strip when a Claude limit is ≥ 85%,
   and a `…` menu (refresh, agy on/off + sign in, start Claude session, token report, launch at login, quit).

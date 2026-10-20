@@ -211,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateLabel() {
         let pct = store.mainFive
-        item.button?.image = MenuBarImage.make(pct: pct, worst: store.worstClaude, attention: store.needsAttention)
+        item.button?.image = MenuBarImage.make(five: pct, week: store.mainWeek, attention: store.needsAttention)
         item.button?.setAccessibilityLabel("Usage" + (pct.map { ", MAIN 5 hour \(Int($0.rounded())) percent" } ?? ""))
     }
 
@@ -238,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/\(name).png"))
         }
         // menu bar states on light and dark bars
-        let states: [(Double, Double, Bool)] = [(59, 59, false), (74, 74, false), (88, 88, false), (96, 96, false), (59, 59, true)]
+        let states: [(Double, Double, Bool)] = [(59, 27, false), (74, 40, false), (88, 74, false), (96, 90, false), (59, 27, true)]
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             let ap = NSAppearance(named: appearance)!
             let sheet = NSImage(size: NSSize(width: 5 * 80, height: 30), flipped: false) { _ in
@@ -246,7 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSRect(x: 0, y: 0, width: 400, height: 30).fill()
                 for (i, st) in states.enumerated() {
                     ap.performAsCurrentDrawingAppearance {
-                        MenuBarImage.make(pct: st.0, worst: st.1, attention: st.2).draw(at: NSPoint(x: 8 + 80 * i, y: 4), from: .zero, operation: .sourceOver, fraction: 1)
+                        MenuBarImage.make(five: st.0, week: st.1, attention: st.2).draw(at: NSPoint(x: 8 + 80 * i, y: 4), from: .zero, operation: .sourceOver, fraction: 1)
                     }
                 }
                 return true
