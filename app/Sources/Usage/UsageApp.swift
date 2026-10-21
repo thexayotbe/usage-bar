@@ -51,6 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         store.load()
         updateLabel()
+        if CommandLine.arguments.contains("--check") {   // prints what the app would show, then quits (no UI)
+            Task { await store.check(); NSApp.terminate(nil) }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLine.arguments.count {
             snapshot(into: CommandLine.arguments[i + 1])  // renders the popover to PNGs and quits
             return
@@ -66,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.store.load() }
             },
-            Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in   // every account has its own minimum interval
                 MainActor.assumeIsolated { self?.store.refresh() }
             },
         ]
@@ -212,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateLabel() {
         let pct = store.mainFive
         item.button?.image = MenuBarImage.make(five: pct, week: store.mainWeek, attention: store.needsAttention)
-        item.button?.setAccessibilityLabel("Usage" + (pct.map { ", MAIN 5 hour \(Int($0.rounded())) percent" } ?? ""))
+        item.button?.setAccessibilityLabel("Usage" + (pct.map { ", \(store.menuBarName ?? "") 5 hour \(Int($0.rounded())) percent" } ?? ""))
     }
 
     /// Debug: render the popover (light, dark) and the details window to PNG files.

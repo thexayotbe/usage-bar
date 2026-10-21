@@ -73,7 +73,7 @@ struct HeaderView: View {
             Spacer()
             // Spins only while a refresh runs; stops dead (angle 0) when it ends.
             TimelineView(.animation(paused: !store.isRefreshing)) { ctx in
-                IconButton(symbol: "arrow.clockwise", help: "Refresh") { store.refresh() }
+                IconButton(symbol: "arrow.clockwise", help: "Refresh") { store.refresh(force: true) }
                     .rotationEffect(.degrees(store.isRefreshing ? ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1) * 360 : 0))
             }
             .disabled(store.isRefreshing)
@@ -117,7 +117,7 @@ struct AlertStrip: View {
 
 struct ClaudeCard: View {
     var account: ClaudeAccount
-    private var quiet: Bool { account.role == "reserve" }
+    private var quiet: Bool { account.quiet }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -125,7 +125,7 @@ struct ClaudeCard: View {
                 Text(account.name)
                     .font(.system(size: quiet ? 12 : 13, weight: quiet ? .medium : .semibold))
                     .foregroundStyle(quiet ? Theme.fg2 : .primary)
-                Text(account.tag).font(.system(size: 11)).foregroundStyle(Theme.fg2)
+                if !account.tag.isEmpty { Text(account.tag).font(.system(size: 11)).foregroundStyle(Theme.fg2) }
             }
             .frame(height: 18)
             VStack(spacing: 6) {
@@ -261,7 +261,7 @@ struct FooterView: View {
             Spacer()
             Menu {
                 Button("Show details") { store.showDetails?() }.keyboardShortcut("d", modifiers: .command)
-                Button("Refresh now") { store.refresh() }.keyboardShortcut("r", modifiers: .command)
+                Button("Refresh now") { store.refresh(force: true) }.keyboardShortcut("r", modifiers: .command)
                 Divider()
                 Menu("Agy accounts") {
                     ForEach(store.agy) { a in
@@ -274,8 +274,16 @@ struct FooterView: View {
                     Divider()
                     Button("Turn off all") { store.turnOffAll() }
                 }
-                Button("Start Claude session") { store.startClaude() }
-                Button("Token report") { store.tokenReport() }
+                if !store.claude.isEmpty {
+                    Menu("Claude accounts") {
+                        ForEach(store.claude) { a in
+                            Button(a.error != nil && a.five == nil ? "\(a.name)  Sign in…" : "\(a.name)  Open session") { store.startClaude(a.id) }
+                        }
+                    }
+                }
+                Divider()
+                Button("Open config…") { store.openConfig() }
+                Button("Reload config") { store.reloadConfig() }
                 Divider()
                 Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
                 Divider()
@@ -303,12 +311,16 @@ struct PopoverView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HeaderView()
                 if let alert = store.alertText { AlertStrip(text: alert) }
-                SectionLabel(text: "Claude")
-                VStack(spacing: 8) {
-                    ForEach(store.claude) { ClaudeCard(account: $0) }
+                if !store.claude.isEmpty {
+                    SectionLabel(text: "Claude")
+                    VStack(spacing: 8) {
+                        ForEach(store.claude) { ClaudeCard(account: $0) }
+                    }
                 }
-                SectionLabel(text: "Agy", top: 14)
-                AgyList()
+                if !store.agy.isEmpty {
+                    SectionLabel(text: "Agy", top: store.claude.isEmpty ? 6 : 14)
+                    AgyList()
+                }
             }
             .padding(.horizontal, 12)
             FooterView().padding(.top, 10)
@@ -330,13 +342,17 @@ struct DetailsView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HeaderView(title: "Usage details")
                 if let alert = store.alertText { AlertStrip(text: alert) }
-                SectionLabel(text: "Claude")
-                VStack(spacing: 8) {
-                    ForEach(store.claude) { ClaudeCard(account: $0) }
+                if !store.claude.isEmpty {
+                    SectionLabel(text: "Claude")
+                    VStack(spacing: 8) {
+                        ForEach(store.claude) { ClaudeCard(account: $0) }
+                    }
                 }
-                SectionLabel(text: "Agy", top: 14)
-                VStack(spacing: 8) {
-                    ForEach(store.agy) { AgyDetailCard(account: $0) }
+                if !store.agy.isEmpty {
+                    SectionLabel(text: "Agy", top: store.claude.isEmpty ? 6 : 14)
+                    VStack(spacing: 8) {
+                        ForEach(store.agy) { AgyDetailCard(account: $0) }
+                    }
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 16)

@@ -1,0 +1,13 @@
+{
+  "refreshMinutes": 5,
+  "menuBarAccount": "work",
+  "claude": [
+    { "name": "work", "configDir": "~/.claude" },
+    { "name": "personal", "label": "reserve", "configDir": "~/.claude-personal" }
+  ],
+  "agy": [
+    { "name": "agy", "enabled": true },
+    { "name": "agy2", "home": "~/.agy-accounts/agy2", "enabled": true }
+  ],
+  "quotaFile": null
+}

@@ -8,13 +8,16 @@ struct Window {
 }
 
 struct ClaudeAccount: Identifiable {
-    var id: String            // "main", "second"
-    var role: String          // "primary" / "reserve"
+    var id: String            // account name from the config
+    var label: String?        // optional free text, e.g. "reserve"
     var five: Window?
     var week: Window?
     var error: String?
+    var stale = false         // last fetch failed; numbers are from an earlier one
     var name: String { id.uppercased() }
-    var tag: String { role == "reserve" ? "Reserve" : "Primary" }
+    var tag: String { label ?? "" }
+    /// Accounts labelled "reserve" are drawn quieter.
+    var quiet: Bool { label?.lowercased() == "reserve" }
 }
 
 struct AgyGroup {
@@ -31,28 +34,37 @@ struct AgyAccount: Identifiable {
     var error: String?
 }
 
-/// Reads ~/.claude-control/state/quota.json (written by `ctl.py quota`) and drives the controls.
+/// Fetches Claude + agy limits natively (or reads an optional quotaFile) and drives the controls.
 @MainActor
 final class UsageStore: ObservableObject {
     @Published var claude: [ClaudeAccount] = []
     @Published var agy: [AgyAccount] = []
     @Published var updatedAt: Date?
     @Published var isRefreshing = false
+    @Published var problem: String?       // config / quotaFile trouble, shown in the alert strip
     /// Set by the app delegate: opens the details window.
     var showDetails: (() -> Void)?
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
 
-    private let root = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude-control")
-    private var quotaURL: URL { root.appendingPathComponent("state/quota.json") }
-    private var ctl: String { root.appendingPathComponent("bin/ctl.py").path }
-    private var ai: String { root.appendingPathComponent("bin/ai").path }
+    private(set) var config = AppConfig()
+    private var cache = Cache.load()
+
+    init() {
+        let r = AppConfig.load()
+        config = r.config
+        problem = r.error
+    }
 
     // MARK: derived
 
-    /// MAIN's 5h window drives the number and the arc in the menu bar.
-    var mainFive: Double? { claude.first(where: { $0.id == "main" })?.five?.used ?? claude.first?.five?.used }
+    private var menuBarClaude: ClaudeAccount? {
+        claude.first(where: { $0.id.lowercased() == config.menuBarAccount?.lowercased() }) ?? claude.first
+    }
 
-    var mainWeek: Double? { claude.first(where: { $0.id == "main" })?.week?.used ?? claude.first?.week?.used }
+    /// The menu bar account's 5h window drives the number and the arc in the menu bar.
+    var mainFive: Double? { menuBarClaude?.five?.used }
+    var mainWeek: Double? { menuBarClaude?.week?.used }
+    var menuBarName: String? { menuBarClaude?.name }
 
     /// Worst of all Claude limits drives the ring colour.
     var worstClaude: Double { claude.flatMap { [$0.five?.used, $0.week?.used] }.compactMap { $0 }.max() ?? 0 }
@@ -60,11 +72,12 @@ final class UsageStore: ObservableObject {
     var isStale: Bool { updatedAt.map { Date().timeIntervalSince($0) > 15 * 60 } ?? true }
 
     var needsAttention: Bool {
-        isStale || agy.contains { $0.enabled && $0.needsLogin } || claude.contains { $0.error != nil && $0.five == nil }
+        isStale || agy.contains { $0.enabled && $0.needsLogin } || claude.contains { $0.error != nil && ($0.five == nil || $0.stale) }
     }
 
-    /// One line, only when a Claude limit is >= 85%; worst first.
+    /// One line: a config problem, else the worst Claude limit that is >= 85%.
     var alertText: String? {
+        if let p = problem { return p }
         var hits: [(Double, String)] = []
         for a in claude {
             for (label, w) in [("5h", a.five), ("week", a.week)] {
@@ -76,115 +89,171 @@ final class UsageStore: ObservableObject {
         return hits.max(by: { $0.0 < $1.0 })?.1
     }
 
-    // MARK: loading
+    private var quotaFile: String? {
+        guard let q = config.quotaFile?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return nil }
+        return q
+    }
+
+    // MARK: loading (no network: rebuilds the view model from the cache or quotaFile)
 
     func load() {
         let now = Date()
-        guard let data = try? Data(contentsOf: quotaURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        updatedAt = (json["ts"] as? Double).map { Date(timeIntervalSince1970: $0) }
-
-        let config = readJSON(root.appendingPathComponent("config.json"))
-        let roles = (config["accounts"] as? [String: Any]) ?? [:]
-        let claudeJSON = (json["claude"] as? [String: Any]) ?? [:]
-        let keys = Set(roles.keys).union(claudeJSON.keys).sorted { a, b in
-            let order = ["main": 0, "second": 1]
-            return (order[a] ?? 9, a) < (order[b] ?? 9, b)
+        var cRecs = cache.claude, aRecs = cache.agy
+        var names = config.claude.map(\.name)
+        if let q = quotaFile {
+            if let r = QuotaFile.read(q) {
+                cRecs = r.claude; aRecs = r.agy
+                updatedAt = r.ts.map { Date(timeIntervalSince1970: $0) }
+                problem = problem?.hasPrefix("Can't read quotaFile") == true ? nil : problem
+                let known = Set(names.map { $0.lowercased() })
+                names += r.claude.keys.filter { !known.contains($0) }.sorted()
+            } else {
+                problem = problem ?? "Can't read quotaFile \((q as NSString).lastPathComponent)"
+            }
+        } else {
+            let stamps = config.claude.compactMap { cRecs[$0.name.lowercased()]?.fetchedAt }
+                + config.agy.filter(\.enabled).compactMap { aRecs[$0.name.lowercased()]?.fetchedAt }
+            updatedAt = stamps.max().map { Date(timeIntervalSince1970: $0) }
         }
-        claude = keys.map { k in
-            let q = (claudeJSON[k] as? [String: Any]) ?? [:]
-            let role = ((roles[k] as? [String: Any])?["role"] as? String) ?? "primary"
-            return ClaudeAccount(id: k, role: role,
-                                 five: claudeWindow(q["five_hour"], now), week: claudeWindow(q["seven_day"], now),
-                                 error: q["error"] as? String)
-        }
 
-        let agyJSON = (json["agy"] as? [String: Any]) ?? [:]
-        let state = (readJSON(root.appendingPathComponent("state/agy.json"))["accounts"] as? [String: Any]) ?? [:]
-        let list = ((config["agy"] as? [String: Any])?["accounts"] as? [[String: Any]]) ?? []
-        agy = list.compactMap { a in
-            guard let name = a["name"] as? String else { return nil }
-            let q = (agyJSON[name] as? [String: Any]) ?? [:]
-            let st = (state[name] as? [String: Any]) ?? [:]
-            return AgyAccount(id: name, enabled: (a["enabled"] as? Bool) ?? true,
-                              needsLogin: (q["needs_login"] as? Bool ?? false) || (st["needs_login"] as? Bool ?? false),
-                              gemini: agyGroup(q["gemini"], now), claude: agyGroup(q["claude"], now),
-                              error: q["error"] as? String)
+        claude = names.map { n in
+            let rec = cRecs[n.lowercased()] ?? ClaudeRec()
+            let label = config.claude.first { $0.name == n }?.label
+            return ClaudeAccount(id: n, label: label?.isEmpty == true ? nil : label,
+                                 five: live(rec.five, now), week: live(rec.week, now),
+                                 error: rec.error, stale: rec.error != nil && rec.five != nil)
         }
-    }
-
-    private func readJSON(_ url: URL) -> [String: Any] {
-        guard let d = try? Data(contentsOf: url) else { return [:] }
-        return (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        agy = config.agy.map { a in
+            let rec = aRecs[a.name.lowercased()] ?? AgyRec()
+            return AgyAccount(id: a.name, enabled: a.enabled, needsLogin: rec.needsLogin,
+                              gemini: group(rec.gemini, now), claude: group(rec.claude, now), error: rec.error)
+        }
     }
 
     /// A window whose reset time has passed has reset: 0% used.
-    private func live(_ used: Double, _ reset: Double?, _ now: Date) -> Window {
-        let date = reset.map { Date(timeIntervalSince1970: $0) }
+    private func live(_ w: WinRec?, _ now: Date) -> Window? {
+        guard let w else { return nil }
+        let date = w.resets.map { Date(timeIntervalSince1970: $0) }
         if let date, date < now { return Window(used: 0, resets: nil) }
-        return Window(used: used, resets: date)
+        return Window(used: w.used, resets: date)
     }
 
-    private func claudeWindow(_ any: Any?, _ now: Date) -> Window? {
-        guard let d = any as? [String: Any], let p = d["pct"] as? Double else { return nil }
-        return live(p, d["resets"] as? Double, now)
+    private func group(_ g: AgyGroupRec?, _ now: Date) -> AgyGroup? {
+        g.map { AgyGroup(week: live($0.week, now), five: live($0.five, now)) }
     }
 
-    private func agyGroup(_ any: Any?, _ now: Date) -> AgyGroup? {
-        guard let d = any as? [String: Any] else { return nil }
-        func w(_ key: String) -> Window? {
-            guard let x = d[key] as? [String: Any], let rem = x["remaining"] as? Double else { return nil }
-            return live(100 - rem, x["resets"] as? Double, now)   // agy reports % left; the app always shows % used
-        }
-        return AgyGroup(week: w("week"), five: w("five"))
+    // MARK: refreshing
+
+    private var claudeInterval: TimeInterval { Double(max(config.refreshMinutes, 5)) * 60 }   // never poll the API faster than 5 min
+    private var agyInterval: TimeInterval { Double(max(config.refreshMinutes, 1)) * 60 }
+
+    private func claudeDue(_ a: ClaudeConfig, force: Bool, _ now: Double) -> Bool {
+        guard let r = cache.claude[a.name.lowercased()], r.source == a.configDir else { return true }
+        if let b = r.backoffUntil, b > now { return false }
+        if force && r.lastAPICall == nil { return true }   // never reached the API (e.g. not signed in yet): retry on demand
+        return now >= (r.lastAttempt ?? 0) + claudeInterval
     }
 
-    // MARK: actions
+    private func agyDue(_ a: AgyConfig, force: Bool, _ now: Double) -> Bool {
+        guard let r = cache.agy[a.name.lowercased()], r.source == a.home else { return true }
+        return now >= (r.lastAttempt ?? 0) + (force ? 30 : agyInterval)
+    }
 
-    func refresh() {
+    private enum Fetched {
+        case claude(String, ClaudeRec)
+        case agy(String, AgyRec)
+    }
+
+    /// Fetches whatever is due. Cheap to call often: every account has its own minimum interval.
+    func refresh(force: Bool = false) {
+        if quotaFile != nil { load(); return }
         guard !isRefreshing else { return }
+        let now = Date().timeIntervalSince1970
+        let claudeJobs = config.claude.filter { claudeDue($0, force: force, now) }
+        let agyJobs = config.agy.filter { $0.enabled && agyDue($0, force: force, now) }
+        guard !claudeJobs.isEmpty || !agyJobs.isEmpty else { load(); return }
         isRefreshing = true
-        let script = ctl
-        Task.detached {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            p.arguments = [script, "quota"]
-            p.standardOutput = FileHandle.nullDevice
-            p.standardError = FileHandle.nullDevice
-            try? p.run()
-            p.waitUntilExit()
-            await MainActor.run {
-                self.isRefreshing = false
-                self.load()
+        let priorC = cache.claude, priorA = cache.agy
+        Task {
+            var results: [Fetched] = []
+            await withTaskGroup(of: Fetched.self) { g in
+                for a in claudeJobs { g.addTask { .claude(a.name.lowercased(), await ClaudeFetcher.fetch(a, prior: priorC[a.name.lowercased()])) } }
+                for a in agyJobs { g.addTask { .agy(a.name.lowercased(), await AgyFetcher.fetch(a, prior: priorA[a.name.lowercased()])) } }
+                for await r in g { results.append(r) }
             }
+            for r in results {
+                switch r {
+                case .claude(let k, let rec): cache.claude[k] = rec
+                case .agy(let k, let rec): cache.agy[k] = rec
+                }
+            }
+            cache.save()
+            isRefreshing = false
+            load()
         }
+    }
+
+    /// Debug (`--check`): fetch everything that is due, print a token-free summary.
+    func check() async {
+        refresh(force: true)
+        while isRefreshing { try? await Task.sleep(nanoseconds: 200_000_000) }
+        load()
+        for a in claude {
+            print("claude \(a.id): 5h=\(a.five.map { "\(Int($0.used.rounded()))%" } ?? "-") week=\(a.week.map { "\(Int($0.used.rounded()))%" } ?? "-")" + (a.error.map { " error=\($0)" } ?? ""))
+        }
+        for a in agy {
+            func s(_ g: AgyGroup?) -> String { "wk=\(g?.week.map { "\(Int($0.used.rounded()))%" } ?? "-") 5h=\(g?.five.map { "\(Int($0.used.rounded()))%" } ?? "-")" }
+            print("agy \(a.id): enabled=\(a.enabled) needsLogin=\(a.needsLogin) gemini[\(s(a.gemini))] claude[\(s(a.claude))]" + (a.error.map { " error=\($0)" } ?? ""))
+        }
+    }
+
+    // MARK: config actions
+
+    func reloadConfig() {
+        let r = AppConfig.load()
+        config = r.config
+        problem = r.error
+        load()
+        refresh(force: true)
+    }
+
+    func openConfig() {
+        if !FileManager.default.fileExists(atPath: AppConfig.url.path) { config.save() }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-t", AppConfig.url.path]   // default text editor
+        try? p.run()
     }
 
     func setEnabled(_ name: String, _ on: Bool) {
-        runAI(["agy", on ? "on" : "off", name])
+        guard let i = config.agy.firstIndex(where: { $0.name == name }) else { return }
+        config.agy[i].enabled = on
+        config.save()
+        load()
+        if on { refresh() }
     }
 
     func turnOffAll() {
-        for a in agy where a.enabled { runAI(["agy", "off", a.id]) }
+        for i in config.agy.indices { config.agy[i].enabled = false }
+        config.save()
+        load()
     }
 
-    private func runAI(_ args: [String]) {
-        let script = ai
-        Task.detached {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            p.arguments = [script] + args
-            p.standardOutput = FileHandle.nullDevice
-            p.standardError = FileHandle.nullDevice
-            try? p.run()
-            p.waitUntilExit()
-            await MainActor.run { self.load() }
-        }
+    // MARK: sign-in / sessions (open Terminal)
+
+    func signIn(_ name: String) {
+        guard let a = config.agy.first(where: { $0.name == name }) else { return }
+        var cmd = Paths.shellQuote(Paths.find("agy") ?? "agy")
+        if let h = a.home, !h.isEmpty, Paths.absolute(h) != Paths.absolute("~") { cmd = "HOME=\(Paths.shellQuote(Paths.absolute(h))) " + cmd }
+        Terminal.run(cmd)
     }
 
-    func signIn(_ name: String) { Terminal.run("\(ai) agy login \(name)") }
-    func startClaude() { Terminal.run("\(ai) main") }
-    func tokenReport() { Terminal.run("/usr/bin/python3 \(ctl) report; echo; read -n 1 -s -r -p 'Press any key to close'") }
+    func startClaude(_ name: String) {
+        guard let a = config.claude.first(where: { $0.name == name }) else { return }
+        var cmd = Paths.shellQuote(Paths.find("claude") ?? "claude")
+        if Paths.absolute(a.configDir) != Paths.absolute("~/.claude") { cmd = "CLAUDE_CONFIG_DIR=\(Paths.shellQuote(Paths.absolute(a.configDir))) " + cmd }
+        Terminal.run(cmd)
+    }
 
     func setLaunchAtLogin(_ on: Bool) {
         do {
